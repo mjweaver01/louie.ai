@@ -6,6 +6,7 @@ import { useMessagesStore } from './messages'
 export const useConversationsStore = defineStore('conversations', {
   state: () => {
     return {
+      nosupa: localStorage.getItem('nosupa') === 'true',
       conversations: localStorage.getItem('conversations')
         ? JSON.parse(localStorage.getItem('conversations'))
         : [],
@@ -13,6 +14,7 @@ export const useConversationsStore = defineStore('conversations', {
   },
   actions: {
     getConversations() {
+      if (this.nosupa) return
       const client = useClientStore()
       const user = useUserStore()
 
@@ -30,11 +32,13 @@ export const useConversationsStore = defineStore('conversations', {
     },
 
     setConversation(sentConversation) {
+      if (this.nosupa) return
       const messages = useMessagesStore()
       messages.setConversation(sentConversation, true)
     },
 
     async deleteConversation(conversationId) {
+      if (this.nosupa) return
       const client = useClientStore()
       const user = useUserStore()
 

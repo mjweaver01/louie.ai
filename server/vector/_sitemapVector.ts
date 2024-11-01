@@ -1,3 +1,5 @@
+// DEPRECATED - FOR REFERENCE ONLY
+
 import fs from 'fs'
 import path from 'path'
 import fuzzysort from 'fuzzysort'

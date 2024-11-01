@@ -21,9 +21,10 @@
               @keydown.up.exact.prevent="messagesStore?.setPrevousQuestion()"
             />
             <div class="select">
-              <select v-model="messagesStore.llm" @change="messagesStore?.setLlm">
-                <option value="openai">GPT-4o</option>
-                <option value="anthropic">Claude Sonnet</option>
+              <select v-model="messagesStore.model" @change="messagesStore?.clearConversation()">
+                <option v-for="model in models" :value="model.id">
+                  {{ model.value }}
+                </option>
               </select>
             </div>
           </div>
@@ -47,6 +48,14 @@ import { useMessagesStore } from '../stores/messages'
 export default {
   computed: {
     ...mapStores(useUserStore, useMessagesStore),
+  },
+  data() {
+    return {
+      models: [
+        { id: 'gpt-4o', value: 'GPT-4o' },
+        { id: 'gpt-4o-mini', value: 'GPT-4o Mini' },
+      ],
+    }
   },
 }
 </script>

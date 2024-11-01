@@ -1,209 +1,161 @@
-import langfuse from './clients/langfuse'
-import { type LangfuseTraceClient } from 'langfuse'
-import { CallbackHandler } from 'langfuse-langchain'
+import type { ChatCompletionMessage, ChatCompletionRole } from 'openai/resources/chat/completions'
 import { supabase } from './clients/supabase'
-import { kbTools } from './llm/tools'
-import { systemPromptTemplate } from './llm/prompts'
-import { kbModelWithFunctions } from './llm/openai'
-import { llm as anthropicLlm, kbModelWithTools as anthropicKbModelWithTools } from './llm/anthropic'
+import { systemPromptTemplate } from './prompts'
 import { defaultQuestion } from './constants'
 import random from './idGenerator'
 import { saveToCache } from './cache'
-import { zepMemory, saveToZep } from './clients/zep'
-
-// langchain stuff
-import {
-  AgentExecutor,
-  AgentExecutorInput,
-  createToolCallingAgent,
-  type AgentStep,
-} from 'langchain/agents'
-import { RunnableSequence, type RunnableLike, Runnable } from '@langchain/core/runnables'
-import { AIMessage, BaseMessage, HumanMessage } from '@langchain/core/messages'
-import { formatToOpenAIFunctionMessages } from 'langchain/agents/format_scratchpad'
-import { OpenAIFunctionsAgentOutputParser } from 'langchain/agents/openai/output_parser'
-import { CreateToolCallingAgentParams } from 'langchain/agents'
+import { createChatCompletion } from './clients/openai'
+import { models } from './constants'
+import { handleToolCalls } from './handleToolCalls'
 
 export const ask = async (
   input: string,
   user: string,
   conversationId?: string,
   model?: string,
+  nocache?: boolean,
+  nosupa?: boolean,
 ): Promise<ReadableStream> => {
-  console.log(`[ask] Asking ${model || 'openai'}: ${JSON.stringify(input).substring(0, 100)}`)
-  const isAnthropic = model === 'anthropic'
-  const currentPromptTemplate = systemPromptTemplate(isAnthropic)
-  const currentModelWithFunctions = isAnthropic ? anthropicKbModelWithTools : kbModelWithFunctions
   const sessionId = (conversationId || random()).toString()
+  const messages = []
 
-  let query = supabase.from('conversations').select('*').eq('id', parseInt(conversationId))
-  if (user && user !== 'anonymous') {
-    query = query.eq('user', user)
+  // Create a persistent tool call object outside the stream
+  let currentToolCall = {
+    id: '',
+    name: '',
+    arguments: '',
   }
-  const { data } = await query
-  const messages = data?.[0]?.messages ?? []
-  if (messages.length > 0)
-    console.log(
-      `[ask] existing conversation (${messages.length} message${
-        messages.length > 1 ? 's' : ''
-      }) for ${sessionId}`,
-    )
-  const chatHistory: BaseMessage[] = messages.map((message: { role: string; content: string }) => {
-    if (message.role === 'ai') {
-      return new AIMessage(JSON.stringify(message.content))
-    } else {
-      return new HumanMessage(JSON.stringify(message.content))
+
+  // Get existing conversation if available
+  if (conversationId && !nosupa) {
+    const { data } = await supabase
+      .from('conversations')
+      .select('*')
+      .eq('id', parseInt(conversationId))
+
+    if (data?.[0]?.messages) {
+      messages.push(
+        ...data[0].messages.map((msg) => ({
+          role: msg.role,
+          content: msg.content,
+        })),
+      )
     }
+  }
+
+  if (messages.length === 0) {
+    // Add system prompt
+    messages.unshift({
+      role: 'system',
+      content: systemPromptTemplate(model === 'anthropic'),
+      refusal: '',
+    })
+  }
+
+  // Add user input
+  messages.push({
+    role: 'user',
+    content: input,
+    refusal: '',
   })
 
-  const trace = (await langfuse.trace({
-    name: `ask`,
-    input: JSON.stringify(input),
-    sessionId,
-    metadata: {
-      model,
-      user,
-    },
-  })) as LangfuseTraceClient | any
-
-  const langfuseHandler = new CallbackHandler({ root: trace })
-
-  const memory = zepMemory(sessionId)
-
-  const runnableAgent = isAnthropic
-    ? createToolCallingAgent({
-        llm: anthropicLlm(),
-        prompt: currentPromptTemplate,
-        tools: kbTools,
-        memory: memory,
-      } as unknown as CreateToolCallingAgentParams)
-    : RunnableSequence.from([
-        {
-          input: (i: { input: string; steps: AgentStep[] }) => i.input,
-          agent_scratchpad: (i: { input: string; steps: AgentStep[] }) =>
-            formatToOpenAIFunctionMessages(i.steps),
-          chat_history: (i: { chat_history: BaseMessage[] }) => i.chat_history,
-        },
-        currentPromptTemplate,
-        currentModelWithFunctions as Runnable,
-        new OpenAIFunctionsAgentOutputParser(),
-      ] as unknown as [RunnableLike, RunnableLike])
-  const executor = isAnthropic
-    ? new AgentExecutor({
-        agent: runnableAgent,
-        tools: kbTools,
-        memory: memory,
-      } as unknown as AgentExecutorInput)
-    : AgentExecutor.fromAgentAndTools({
-        agent: runnableAgent,
-        tools: kbTools,
-        memory: memory,
-      } as unknown as AgentExecutorInput)
-
-  const stream = new TransformStream()
-  const writer = stream.writable.getWriter()
   const encoder = new TextEncoder()
-  let outputCache = ''
-  let tokens = 0
-  let pause = false
 
-  function writeChunk(token) {
-    writer.write(encoder.encode(token))
-    outputCache += token
-  }
+  return new ReadableStream({
+    async start(controller) {
+      try {
+        const completion = await createChatCompletion(messages, models[model], true)
 
-  executor.invoke(
-    {
-      input,
-      chat_history: chatHistory,
-    },
-    {
-      configurable: { sessionId: sessionId, isAnthropic: isAnthropic },
-      callbacks: [
-        langfuseHandler,
-        {
-          handleLLMNewToken(token: string) {
-            // if we have a split response, cut out the tool declaration chunk
-            if (token.includes('{')) {
-              pause = true
-              writeChunk(token.split('{')[0])
-            } else if (token.includes('}')) {
-              pause = false
-              writeChunk(token.split('}')[1] + '\n\n---\n\n')
-            } else if (!pause) {
-              writeChunk(token)
+        let outputCache = ''
+
+        for await (const chunk of completion as any) {
+          const content = chunk.choices[0]?.delta?.content
+          const toolCalls = chunk.choices[0]?.delta?.tool_calls
+
+          if (content) {
+            controller.enqueue(encoder.encode(content))
+            outputCache += content
+          }
+
+          // Handle the tool calls with persistent state
+          // second stream will be handled here
+          if (toolCalls) {
+            const toolResult = await handleToolCalls(
+              toolCalls,
+              messages,
+              models[model],
+              currentToolCall,
+            )
+            if (toolResult) {
+              for await (const chunk of toolResult as any) {
+                const content = chunk.choices[0]?.delta?.content
+                if (content) {
+                  controller.enqueue(encoder.encode(content))
+                  outputCache += content
+                }
+              }
             }
+          }
+        }
 
-            tokens += 1
-          },
-          async handleAgentEnd(output) {
-            writer.write(encoder.encode(JSON.stringify({ conversationId: sessionId })))
-
-            // need to check conversationId exists here, not sessionId
-            if (conversationId && messages.length > 0) {
-              const newMessages = [
-                { role: 'user', content: input },
-                { role: 'ai', content: outputCache },
-              ]
-
-              const { error } = await supabase
+        // Cache the conversation if needed
+        if (!nosupa && outputCache.length > 0) {
+          // Save conversation in background
+          await Promise.allSettled([
+            (async () => {
+              const { data: existingConversation } = await supabase
                 .from('conversations')
-                .update([
-                  {
-                    messages: [...messages, ...newMessages],
-                  },
-                ])
+                .select('messages')
                 .eq('id', parseInt(conversationId))
-                .eq('user', user)
+                .single()
 
-              if (error) {
-                console.error(error.message)
+              if (existingConversation) {
+                await supabase
+                  .from('conversations')
+                  .update({
+                    messages: [
+                      ...messages.filter(
+                        (msg: ChatCompletionMessage, index: number) =>
+                          msg.content &&
+                          msg.content.length > 0 &&
+                          msg.role !== ('system' as ChatCompletionRole) &&
+                          msg.role !== ('tool' as ChatCompletionRole),
+                      ),
+                      { role: 'assistant', content: outputCache },
+                    ],
+                  })
+                  .eq('id', parseInt(conversationId))
+              } else {
+                await supabase.from('conversations').insert({
+                  id: parseInt(sessionId),
+                  conversationId: parseInt(sessionId),
+                  model: models[model],
+                  user,
+                  messages: [
+                    ...messages.filter(
+                      (msg: ChatCompletionMessage, index: number) =>
+                        msg.content &&
+                        msg.content.length > 0 &&
+                        msg.role !== ('system' as ChatCompletionRole) &&
+                        msg.role !== ('tool' as ChatCompletionRole),
+                    ),
+                    { role: 'assistant', content: outputCache },
+                  ],
+                })
               }
+            })(),
+            (async () =>
+              !nocache && (await saveToCache(Date.now(), input, outputCache, model, user)))(),
+          ])
+        }
 
-              await saveToZep(sessionId, newMessages)
-            } else {
-              const newMessages = [
-                { role: 'user', content: input },
-                { role: 'ai', content: outputCache },
-              ]
-
-              const { error } = await supabase.from('conversations').upsert({
-                id: parseInt(sessionId),
-                conversationId: parseInt(sessionId),
-                model,
-                user,
-                messages: [...messages, ...newMessages],
-              })
-              if (error) {
-                console.error(error.message)
-              }
-
-              await saveToZep(sessionId, newMessages)
-            }
-
-            console.log('[ask] updated conversation', sessionId)
-
-            await saveToCache(Date.now(), input, outputCache, model, user)
-
-            await trace.update({
-              output: JSON.stringify(outputCache),
-              sessionId,
-              metadata: {
-                model,
-                user,
-                tokens,
-              },
-            })
-            await langfuse.shutdownAsync()
-
-            writer.close()
-          },
-        },
-      ],
+        controller.close()
+      } catch (error) {
+        console.error('Error in stream:', error)
+        controller.error(error)
+      }
     },
-  )
-
-  return stream.readable
+  })
 }
 
 export async function askQuestion(
@@ -211,8 +163,10 @@ export async function askQuestion(
   user: string,
   conversationId?: string,
   model?: string,
+  nocache?: boolean,
+  nosupa?: boolean,
 ): Promise<ReadableStream> {
-  const response = await ask(input, user, conversationId, model)
+  const response = await ask(input, user, conversationId, model, nocache, nosupa)
 
   const transformStream = new TransformStream({
     transform(chunk, controller) {

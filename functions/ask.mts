@@ -8,6 +8,7 @@ export default async (req: Request, context: Context) => {
   const body = await req.json()
   const qs = new URL(req.url).searchParams
   const nocache = body?.nocache ?? qs.get('nocache') === 'true' ?? false
+  const nosupa = body?.nosupa ?? qs.get('nosupa') === 'true' ?? false
   const model = body?.model ?? qs.get('model') ?? 'openai'
   const user = body?.user ?? qs.get('user') ?? 'anonymous'
   const input = body?.question?.trim() ?? null
@@ -17,7 +18,7 @@ export default async (req: Request, context: Context) => {
     return Response.json({ error: 'No question provided' }, { status: 400 })
   }
 
-  if (!nocache) {
+  if (!nocache && !nosupa) {
     const cachedData = await getCache(model, conversationId, user, input)
     const latestCacheHit = cachedData?.[0]
 
@@ -34,7 +35,7 @@ export default async (req: Request, context: Context) => {
           user,
           messages: [
             { role: 'user', content: input },
-            { role: 'ai', content: latestCacheHit.answer },
+            { role: 'assistant', content: latestCacheHit.answer },
           ],
         })
       } catch {}
@@ -48,7 +49,7 @@ export default async (req: Request, context: Context) => {
   }
 
   try {
-    const stream = await askQuestion(input, user, conversationId, model)
+    const stream = await askQuestion(input, user, conversationId, model, nocache, nosupa)
 
     let fullAnswer = ''
     const transformStream = new TransformStream({

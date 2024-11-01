@@ -2,7 +2,15 @@ import type { Context } from '@netlify/functions'
 import { getConversation } from '../server/cache'
 
 export default async (req: Request, context: Context) => {
-  const { conversationId, user } = await req.json()
+  const { conversationId, user, nosupa } = await req.json()
+
+  if (nosupa) {
+    return Response.json({
+      code: 400,
+      message: 'No supabase',
+      error: true,
+    })
+  }
 
   const conversation = await getConversation(conversationId, user)
 

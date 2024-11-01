@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 import { useUserStore } from './user'
 import { useConversationsStore } from './conversations'
 import { useRouter } from 'vue-router'
+import { models } from '../../server/constants'
 
 export const useMessagesStore = defineStore('messages', {
   state: () => ({
@@ -10,9 +11,10 @@ export const useMessagesStore = defineStore('messages', {
     question: '',
     conversationId: '',
     loading: false,
-    llm: 'openai',
+    model: 'gpt-4o',
     router: useRouter(),
-    nocache: false,
+    nocache: localStorage.getItem('nocache') === 'true',
+    nosupa: localStorage.getItem('nosupa') === 'true',
     streaming: false,
     userScrolledUp: false,
   }),
@@ -57,9 +59,10 @@ export const useMessagesStore = defineStore('messages', {
         body: JSON.stringify({
           question,
           conversationId: this.conversationId,
-          model: this.llm,
+          model: this.model,
           user: this.isDefaultQuestion ? 'anonymous' : user?.user?.id,
           nocache: this.nocache,
+          nosupa: this.nosupa,
         }),
         signal: this.abortController.signal,
       })
@@ -245,7 +248,7 @@ export const useMessagesStore = defineStore('messages', {
 
     setConversation(sentConversation, scrollToTop = false) {
       this.messages = sentConversation.messages
-      this.llm = sentConversation.model || 'openai'
+      this.model = this.resolveModel(sentConversation.model)
       this.conversationId = sentConversation.id
       this.router.push(`/chat/${this.conversationId}`)
       if (scrollToTop) {
@@ -256,12 +259,12 @@ export const useMessagesStore = defineStore('messages', {
       this.mathjax()
     },
 
-    sanitizeMessage(message) {
-      return this.converter.makeHtml(message)
+    resolveModel(model) {
+      return models[model] ? model : 'gpt-4o'
     },
 
-    setLlm() {
-      this.clearConversation()
+    sanitizeMessage(message) {
+      return this.converter.makeHtml(message)
     },
   },
 })

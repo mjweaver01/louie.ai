@@ -49,7 +49,7 @@
               <h4>"{{ conversation.messages[0].content }}"</h4>
               <h5>
                 {{ conversation.messages.length }} messages with
-                <span style="color: var(--blue)">{{ convertModel(conversation.model) }}</span>
+                <span style="color: var(--blue)">Nitro</span>
               </h5>
             </div>
             <i
@@ -81,16 +81,6 @@ export default {
     ...mapStores(useUserStore, useConversationsStore),
   },
   methods: {
-    convertModel(model) {
-      if (model?.includes('gpt')) {
-        return 'ChatGPT'
-      } else if (model?.includes('anthropic')) {
-        return 'Claude Sonnet 3.5'
-      }
-
-      return 'ChatGPT'
-    },
-
     deleteConversation(conversationId) {
       if (confirm('Are you sure you want to delete this conversation?')) {
         this.conversationsStore.deleteConversation(conversationId)

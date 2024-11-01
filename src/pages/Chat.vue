@@ -35,8 +35,8 @@ export default {
     if (conversationId?.length > 0) this.messagesStore?.getConversation(conversationId)
 
     const params = new URLSearchParams(window.location.search)
-    const selectedModel = params.get('model') || params.get('llm')
-    if (selectedModel?.length > 0) this.messagesStore.llm = selectedModel
+    const selectedModel = params.get('model')
+    if (selectedModel?.length > 0) this.messagesStore.model = selectedModel
   },
   methods: {
     setUserScrolledUp(e) {

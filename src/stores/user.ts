@@ -108,7 +108,7 @@ export const useUserStore = defineStore('user', {
 
     async authUser() {
       const client = useClientStore()
-      const u = await client.client.auth.getUser()
+      const u = await client?.client?.auth?.getUser()
       if (u?.data?.user) {
         this.user = u.data.user
         localStorage.setItem('user', JSON.stringify(this.user))
